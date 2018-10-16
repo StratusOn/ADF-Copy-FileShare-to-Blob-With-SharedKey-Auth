@@ -1,0 +1,869 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Location where the Azure Data Factory is to be deployed. The allowed values are the locations where ADFv2 is available."
+      },
+      "allowedValues": [
+        "East US",
+        "East US 2",
+        "North Europe",
+        "Southeast Asia",
+        "West Central US",
+        "West Europe",
+        "West US",
+        "West US 2"
+      ],
+      "defaultValue": "West US"
+    },
+    "factoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure Data Factory (ADFv2) Name."
+      },
+      "defaultValue": "[concat('adfcopyfiletoblob', uniqueString(resourceGroup().id, deployment().name))]"
+    },
+    "sourceAzureFilesAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Source Azure Files Storage Account name. It must be in the same subscription where this template is being deployed."
+      }
+    },
+    "sourceAzureFilesAccountResourceGroup": {
+      "type": "string",
+      "metadata": {
+        "description": "Source Azure Files Storage Account resource group name. It must be in the same subscription where this template is being deployed."
+      },
+      "defaultValue": "[resourceGroup().name]"
+    },
+    "sourceAzureFilesShare": {
+      "type": "string",
+      "metadata": {
+        "description": "The share name in Azure Files where source files reside."
+      }
+    },
+    "sourceAzureFilesRootFolder": {
+      "type": "string",
+      "metadata": {
+        "description": "The root folder within the Azure Files share. Leave empty if the source files reside at the root of the file share."
+      },
+      "defaultValue": ""
+    },
+    "targetBlobStorageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Target Azure Storage Account name. It must be in the same subscription where this template is being deployed."
+      }
+    },
+    "targetBlobStorageAccountResourceGroup": {
+      "type": "string",
+      "metadata": {
+        "description": "Target Azure Storage Account resource group name. It must be in the same subscription where this template is being deployed."
+      },
+      "defaultValue": "[resourceGroup().name]"
+    },
+    "targetBlobStorageContainer": {
+      "type": "string",
+      "metadata": {
+        "description": "Container name in the target Azure Storage Account."
+      }
+    }
+  },
+  "variables": {
+    "uniqueSuffix": "[uniqueString(resourceGroup().id, deployment().name)]",
+    "factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]",
+    "integrationRuntimeName": "AutoResolveIntegrationRuntime",
+    "triggerScheduleFrequency": "Hour",
+    "triggerScheduleInterval": 1,
+    "triggerScheduleStartTime": "2018-07-15T00:00:00.000Z",
+    "triggerScheduleTimeZone": "UTC",
+    "dataFactoryApiVersion": "2018-06-01",
+    "keyVaultApiVersion": "2016-10-01",
+    "appInsightsApiVersion": "2015-05-01",
+    "storageApiVersion": "2018-02-01",
+    "appServiceApiVersion": "2016-08-01",
+    "hostingPlanApiVersion": "2016-09-01",
+    "roleAssignmentsApiVersion": "2016-07-01",
+    "msiApiVersion": "2015-08-31-PREVIEW",
+    "functionAppName": "[concat('adffunc', variables('uniqueSuffix'))]",
+    "appInsightsName": "[concat('adfappins', variables('uniqueSuffix'))]",
+    "hmacsha256HashFunction": {
+      "functionName": "HmacSha256Hash",
+      "functionFiles": {
+        "run.csx": "#r \"Newtonsoft.Json\"\r\n\r\nusing System.Net;\r\nusing Microsoft.AspNetCore.Mvc;\r\nusing Microsoft.Extensions.Primitives;\r\nusing Newtonsoft.Json;\r\nusing System.Security.Cryptography;\r\n\r\npublic static async Task<IActionResult> Run(HttpRequest req, ILogger log)\r\n{\r\n    log.LogInformation($\"HmacSha256Hash function has been invoked at {DateTime.Now}.\");\r\n\r\n    string message = req.Query[\"message\"];\r\n    string secret = req.Query[\"secret\"];\r\n\r\n    string requestBody = await new StreamReader(req.Body).ReadToEndAsync();\r\n    dynamic data = JsonConvert.DeserializeObject(requestBody);\r\n    message = message ?? data?.message;\r\n    secret = secret ?? data?.secret;\r\n\r\n    return (!string.IsNullOrWhiteSpace(message) && !string.IsNullOrWhiteSpace(secret))\r\n        ? (ActionResult)new OkObjectResult(JsonConvert.SerializeObject(new HmacSha256Hash() { base64EncodedHash = HmacSha256HashBase64Encode(message, secret) }))\r\n        : new BadRequestObjectResult(\"Please pass a message and secret on the query string or in the request body\");\r\n}\r\n\r\nprivate static string HmacSha256HashBase64Encode(string message, string secret)\r\n{\r\n    secret = secret ?? \"\";\r\n    var encoding = new System.Text.UTF8Encoding();\r\n    //byte[] keyByte = encoding.GetBytes(secret);\r\n    byte[] keyByte = Convert.FromBase64String(secret);\r\n    byte[] messageBytes = encoding.GetBytes(message);\r\n    using (var hmacsha256 = new HMACSHA256(keyByte))\r\n    {\r\n    byte[] hashmessage = hmacsha256.ComputeHash(messageBytes);\r\n    return Convert.ToBase64String(hashmessage);\r\n    }\r\n}\r\n\r\nclass HmacSha256Hash\r\n{\r\n    public string base64EncodedHash { get; set; }\r\n}\r\n",
+        "function.json": "{\r\n  \"bindings\": [\r\n    {\r\n      \"authLevel\": \"function\",\r\n      \"name\": \"req\",\r\n      \"type\": \"httpTrigger\",\r\n      \"direction\": \"in\",\r\n      \"methods\": [\r\n        \"get\",\r\n        \"post\"\r\n      ]\r\n    },\r\n    {\r\n      \"name\": \"$return\",\r\n      \"type\": \"http\",\r\n      \"direction\": \"out\"\r\n    }\r\n  ]\r\n}"
+      }
+    },
+    "storageAccountName": "[concat('adfstore', variables('uniqueSuffix'))]",
+    "hostingPlanName": "[concat('adffuncplan', variables('uniqueSuffix'))]",
+    "azureKeyVaultName": "[concat('adfkeyvault', variables('uniqueSuffix'))]",
+    "azureKeyVaultBaseUrl": "[concat('https://', variables('azureKeyVaultName'),'.vault.azure.net/')]",
+    "keyVaultSku": {
+      "value": "Standard",
+      "metadata": {
+        "description": "SKU for the Azure KeyVault. Possible values are: 'Standard' and 'Premium'."
+      }
+    },
+    "keyVaultEnabledForDeployment": false,
+    "keyVaultEnabledForTemplateDeployment": false,
+    "keyVaultEnabledForDiskEncryption": false,
+    "keyVaultNetworkAcls": {
+      "value": {
+        "defaultAction": "Allow",
+        "bypass": "AzureServices",
+        "virtualNetworkRules": [],
+        "ipRules": []
+      },
+      "metadata": {
+        "description": "The network firewall defined for this vault."
+      }
+    },
+    "targetBlobDatasetFolderPath": "[parameters('targetBlobStorageContainer')]",
+    "archiveFileShareDatasetFolderPath": "@concat('archive-', formatDateTime(utcnow(), 'yyyyMMddhhmmssfff'))",
+    "sourceFileShareDatasetFolderPath": "[parameters('sourceAzureFilesRootFolder')]",
+    "azureFilesUsernamePrefix": "AZURE\\",
+    "azureFilesHostPrefix": "\\\\",
+    "azureFilesFileSharePrefix": "\\",
+    "sourceFileShareHost": "[concat(variables('azureFilesHostPrefix'), parameters('sourceAzureFilesAccountName'), '.file.core.windows.net', variables('azureFilesFileSharePrefix'), parameters('sourceAzureFilesShare'))]",
+    "sourceFileShareUserId": "[concat(variables('azureFilesUsernamePrefix'), parameters('sourceAzureFilesAccountName'))]",
+    "targetAzureStorageConnectionStringSecretName": {
+      "value": "TargetBlobStorageAccountConnectionString",
+      "metadata": "Secret name in Azure KeyVault where the connection string of the Target Azure Storage Account is stored."
+    },
+    "sourceFileShareAccountKeySecretName": {
+      "value": "SourceFileShareAccountKey",
+      "metadata": "Secret name in Azure KeyVault where the account key of the Source Azure Files Account is stored."
+    },
+    "appInsightsRegionMapping": {
+      "West US": {
+        "region": "West US 2"
+      },
+      "West US 2": {
+        "region": "West US 2"
+      },
+      "East US": {
+        "region": "East US"
+      },
+      "East US 2": {
+        "region": "East US"
+      },
+      "West Central US": {
+        "region": "South Central US"
+      },
+      "North Europe": {
+        "region": "North Europe"
+      },
+      "West Europe": {
+        "region": "West Europe"
+      },
+      "Southeast Asia": {
+        "region": "Southeast Asia"
+      }
+    },
+    "appInsightsLocation": "[variables('appInsightsRegionMapping')[parameters('location')].region]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "name": "[variables('storageAccountName')]",
+      "apiVersion": "[variables('storageApiVersion')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "tags": {
+        "displayName": "StorageAccountForADFv2",
+        "applicationName": "CopyFileShareToBlobContainer"
+      },
+      "properties": {
+        "accessTier": "Hot",
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "services": {
+            "blob": {
+              "enabled": true
+            },
+            "file": {
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "name": "[variables('hostingPlanName')]",
+      "apiVersion": "[variables('hostingPlanApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AppServicePlanForADFv2",
+        "applicationName": "CopyFileShareToBlobContainer"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "name": "[variables('hostingPlanName')]",
+        "computeMode": "Shared",
+        "kind": "functionapp"
+      },
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic",
+        "size": "Y1",
+        "family": "Y",
+        "capacity": 0
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "name": "[variables('functionAppName')]",
+      "apiVersion": "[variables('appServiceApiVersion')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp",
+      "tags": {
+        "displayName": "FunctionAppForADFv2Pipelines",
+        "applicationName": "CopyFileShareToBlobContainer"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+        "[resourceId('microsoft.insights/components', variables('appInsightsName'))]"
+      ],
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "name": "[variables('functionAppName')]",
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "AzureWebJobsDashboard",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "AzureWebJobsSecretStorageType",
+              "value": "Files"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~2"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_ZIP",
+              "value": "0"
+            },
+            {
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[concat(toLower(variables('functionAppName')), '9d6f6a616c6c')]"
+            },
+            {
+              "name": "WEBSITE_NODE_DEFAULT_VERSION",
+              "value": "6.5.0"
+            },
+            {
+              "name": "WEBSITE_USE_PLACEHOLDER",
+              "value": "0"
+            },
+            {
+              "name": "AppInsights_InstrumentationKey",
+              "value": "[reference(concat('microsoft.insights/components/', variables('appInsightsName'))).InstrumentationKey]"
+            }
+          ]
+        },
+        "clientAffinityEnabled": false
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/functions",
+      "name": "[concat(variables('functionAppName'), '/', variables('hmacsha256HashFunction').functionName)]",
+      "apiVersion": "[variables('appServiceApiVersion')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/Sites', variables('functionAppName'))]"
+      ],
+      "properties": {
+        "config": {
+          "disabled": false
+        },
+        "files": "[variables('hmacsha256HashFunction').functionFiles]"
+      }
+    },
+    {
+      "type": "microsoft.insights/components",
+      "name": "[variables('appInsightsName')]",
+      "apiVersion": "[variables('appInsightsApiVersion')]",
+      "location": "[variables('appInsightsLocation')]",
+      "tags": {
+        "displayName": "AppInsightsForADFv2FunctionApp",
+        "applicationName": "CopyFileShareToBlobContainer",
+        "[concat('hidden-link:', resourceGroup().id, '/providers/Microsoft.Web/sites/', variables('functionAppName'))]": "Resource"
+      },
+      "kind": "web",
+      "properties": {
+        "ApplicationId": "[variables('appInsightsName')]",
+        "Application_Type": "web",
+        "Flow_Type": "Bluefield",
+        "Request_Source": "rest"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "name": "[parameters('factoryName')]",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AzureDataFactoryV2",
+        "applicationName": "CopyFileShareToBlobContainer"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "name": "[variables('azureKeyVaultName')]",
+      "apiVersion": "[variables('keyVaultApiVersion')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "displayName": "AzureKeyVaultForADFv2",
+        "applicationName": "CopyFileShareToBlobContainer"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.Web/Sites/functions', variables('functionAppName'), variables('hmacsha256HashFunction').functionName)]"
+      ],
+      "properties": {
+        "enabledForDeployment": "[variables('keyVaultEnabledForDeployment')]",
+        "enabledForTemplateDeployment": "[variables('keyVaultEnabledForTemplateDeployment')]",
+        "enabledForDiskEncryption": "[variables('keyVaultEnabledForDiskEncryption')]",
+        "accessPolicies": [
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(concat(resourceId('Microsoft.Web/sites', variables('functionAppName')),'/providers/Microsoft.ManagedIdentity/Identities/default'), variables('msiApiVersion')).principalId]",
+            "permissions": {
+              "keys": [],
+              "secrets": [
+                "Get"
+              ],
+              "certificates": []
+            }
+          },
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(concat(resourceId('Microsoft.DataFactory/factories', parameters('factoryName')),'/providers/Microsoft.ManagedIdentity/Identities/default'), variables('msiApiVersion')).principalId]",
+            "permissions": {
+              "keys": [],
+              "secrets": [
+                "Get"
+              ],
+              "certificates": []
+            }
+          }
+        ],
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "name": "[variables('keyVaultSku').value]",
+          "family": "A"
+        },
+        "networkAcls": "[variables('keyVaultNetworkAcls').value]"
+      },
+      "resources": [
+        {
+          "type": "secrets",
+          "name": "[variables('targetAzureStorageConnectionStringSecretName').value]",
+          "apiVersion": "[variables('keyVaultApiVersion')]",
+          "properties": {
+            "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', parameters('targetBlobStorageAccountName'),';AccountKey=',listKeys(resourceId(subscription().subscriptionId, parameters('targetBlobStorageAccountResourceGroup'), 'Microsoft.Storage/storageAccounts', parameters('targetBlobStorageAccountName')), variables('storageApiVersion')).keys[0].value)]"
+          },
+          "dependsOn": [
+            "[concat('Microsoft.KeyVault/vaults/', variables('azureKeyVaultName'))]"
+          ]
+        },
+        {
+          "type": "secrets",
+          "name": "[variables('sourceFileShareAccountKeySecretName').value]",
+          "apiVersion": "[variables('keyVaultApiVersion')]",
+          "properties": {
+            "value": "[listKeys(resourceId(subscription().subscriptionId, parameters('sourceAzureFilesAccountResourceGroup'), 'Microsoft.Storage/storageAccounts', parameters('sourceAzureFilesAccountName')), variables('storageApiVersion')).keys[0].value]"
+          },
+          "dependsOn": [
+            "[concat('Microsoft.KeyVault/vaults/', variables('azureKeyVaultName'))]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/SyncObjectsTrigger')]",
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Scheduled recurring trigger that invokes the pipeline for syncing objects between the source Azure Files file share and the target Azure Blob Storage container.",
+        "runtimeState": "Stopped",
+        "pipelines": [
+          {
+            "pipelineReference": {
+              "referenceName": "CopyFromFileShareAndDeleteCopiedFiles",
+              "type": "PipelineReference"
+            },
+            "parameters": {}
+          }
+        ],
+        "type": "ScheduleTrigger",
+        "typeProperties": {
+          "recurrence": {
+            "frequency": "[variables('triggerScheduleFrequency')]",
+            "interval": "[variables('triggerScheduleInterval')]",
+            "startTime": "[variables('triggerScheduleStartTime')]",
+            "timeZone": "[variables('triggerScheduleTimeZone')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/pipelines/CopyFromFileShareAndDeleteCopiedFiles')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/TargetAzureStorageAccount')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Target Azure Storage account to which files are to be copied from the Azure Files share.",
+        "type": "AzureStorage",
+        "typeProperties": {
+          "connectionString": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "AzureKeyVault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "[variables('targetAzureStorageConnectionStringSecretName').value]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AzureKeyVault')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "description": "Azure KeyVault containing the secrets for the Azure Storage accounts.",
+        "type": "AzureKeyVault",
+        "typeProperties": {
+          "baseUrl": "[variables('azureKeyVaultBaseUrl')]"
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/CopyFromFileShareAndDeleteCopiedFiles')]",
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "activities": [
+          {
+            "name": "Copy FileShare to Blob",
+            "type": "Copy",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "FileSystemSource",
+                "recursive": true
+              },
+              "sink": {
+                "type": "BlobSink"
+              },
+              "enableStaging": false,
+              "dataIntegrationUnits": 0
+            },
+            "inputs": [
+              {
+                "referenceName": "SourceFileShareDataset",
+                "type": "DatasetReference",
+                "parameters": {
+                  "FolderPath": {
+                    "value": "@variables('FolderPath')",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "TargetBlobDataset",
+                "type": "DatasetReference",
+                "parameters": {}
+              }
+            ]
+          },
+          {
+            "name": "Archive FileShare",
+            "type": "Copy",
+            "dependsOn": [
+              {
+                "activity": "Copy FileShare to Blob",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "source": {
+                "type": "FileSystemSource",
+                "recursive": true
+              },
+              "sink": {
+                "type": "FileSystemSink",
+                "copyBehavior": "PreserveHierarchy"
+              },
+              "enableStaging": false,
+              "dataIntegrationUnits": 0
+            },
+            "inputs": [
+              {
+                "referenceName": "SourceFileShareDataset",
+                "type": "DatasetReference",
+                "parameters": {
+                  "FolderPath": {
+                    "value": "@variables('FolderPath')",
+                    "type": "Expression"
+                  }
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "referenceName": "ArchiveFileShareDataset",
+                "type": "DatasetReference",
+                "parameters": {}
+              }
+            ]
+          },
+          {
+            "name": "GetCopiedItems",
+            "type": "GetMetadata",
+            "dependsOn": [
+              {
+                "activity": "Archive FileShare",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "7.00:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "userProperties": [],
+            "typeProperties": {
+              "dataset": {
+                "referenceName": "SourceFileShareDataset",
+                "type": "DatasetReference",
+                "parameters": {
+                  "FolderPath": {
+                    "value": "@variables('FolderPath')",
+                    "type": "Expression"
+                  }
+                }
+              },
+              "fieldList": [
+                "childItems"
+              ]
+            }
+          },
+          {
+            "name": "ForEachCopiedItem",
+            "type": "ForEach",
+            "dependsOn": [
+              {
+                "activity": "SetRequestUtcDateTime",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "userProperties": [],
+            "typeProperties": {
+              "items": {
+                "value": "@activity('GetCopiedItems').output.childItems",
+                "type": "Expression"
+              },
+              "activities": [
+                {
+                  "name": "IfItemTypeIsFile",
+                  "description": "NOTE: Does not support deleting folder hierarchies.",
+                  "type": "IfCondition",
+                  "dependsOn": [],
+                  "userProperties": [],
+                  "typeProperties": {
+                    "expression": {
+                      "value": "@equals(item().type, 'File')",
+                      "type": "Expression"
+                    },
+                    "ifTrueActivities": [
+                      {
+                        "name": "HmacSha256HashBase64EncodeFile",
+                        "type": "WebActivity",
+                        "dependsOn": [],
+                        "policy": {
+                          "timeout": "7.00:00:00",
+                          "retry": 5,
+                          "retryIntervalInSeconds": 30,
+                          "secureOutput": false,
+                          "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                          "url": {
+                            "value": "@variables('HashFunctionAppUrl')",
+                            "type": "Expression"
+                          },
+                          "method": "POST",
+                          "headers": {},
+                          "body": {
+                            "value": "@json(concat('{ \"message\" : \"', 'DELETE\\n\\n\\n47\\n\\napplication/json; charset=utf-8\\n\\n\\n\\n\\n\\n\\nx-ms-date:', variables('RequestUtcDateTime'), '\\nx-ms-version:2018-03-28\\n/', variables('StorageAccountName'), '/', variables('FileShareName'), if(empty(variables('FolderPath')), '', concat('/', variables('FolderPath'))), '/', item().name,'\", \"secret\": \"', variables('SourceStorageAccountKey'), '\" }'))",
+                            "type": "Expression"
+                          },
+                          "linkedServices": [],
+                          "datasets": []
+                        }
+                      },
+                      {
+                        "name": "DeleteCopiedFile",
+                        "type": "WebActivity",
+                        "dependsOn": [
+                          {
+                            "activity": "HmacSha256HashBase64EncodeFile",
+                            "dependencyConditions": [
+                              "Succeeded"
+                            ]
+                          }
+                        ],
+                        "policy": {
+                          "timeout": "7.00:00:00",
+                          "retry": 0,
+                          "retryIntervalInSeconds": 30,
+                          "secureOutput": false,
+                          "secureInput": false
+                        },
+                        "userProperties": [],
+                        "typeProperties": {
+                          "url": {
+                            "value": "@concat('https://', variables('StorageAccountName'), '.file.core.windows.net/', variables('FileShareName'), if(empty(variables('FolderPath')), '', concat('/', variables('FolderPath'))), '/', item().name)",
+                            "type": "Expression"
+                          },
+                          "method": "DELETE",
+                          "headers": {
+                            "x-ms-date": {
+                              "value": "@variables('RequestUtcDateTime')",
+                              "type": "Expression"
+                            },
+                            "x-ms-version": {
+                              "value": "2018-03-28",
+                              "type": "Expression"
+                            },
+                            "Authorization": {
+                              "value": "@concat('SharedKey ', variables('StorageAccountName'), ':', activity('HmacSha256HashBase64EncodeFile').output.base64EncodedHash)",
+                              "type": "Expression"
+                            }
+                          },
+                          "linkedServices": [],
+                          "datasets": []
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "SetRequestUtcDateTime",
+            "type": "SetVariable",
+            "dependsOn": [
+              {
+                "activity": "GetCopiedItems",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "userProperties": [],
+            "typeProperties": {
+              "variableName": "RequestUtcDateTime",
+              "value": {
+                "value": "@concat(formatDateTime(utcnow(), 'ddd, dd MMM yyyy HH:mm:ss'), ' GMT')",
+                "type": "Expression"
+              }
+            }
+          }
+        ],
+        "variables": {
+          "RequestUtcDateTime": {
+            "type": "String"
+          },
+          "StorageAccountName": {
+            "type": "String",
+            "defaultValue": "[parameters('sourceAzureFilesAccountName')]"
+          },
+          "FileShareName": {
+            "type": "String",
+            "defaultValue": "[parameters('sourceAzureFilesShare')]"
+          },
+          "FolderPath": {
+            "type": "String",
+            "defaultValue": "[parameters('sourceAzureFilesRootFolder')]"
+          },
+          "SourceStorageAccountKey": {
+            "type": "String",
+            "defaultValue": "[listKeys(resourceId(subscription().subscriptionId, parameters('sourceAzureFilesAccountResourceGroup'), 'Microsoft.Storage/storageAccounts', parameters('sourceAzureFilesAccountName')), variables('storageApiVersion')).keys[0].value]"
+          },
+          "HashFunctionAppUrl": {
+            "type": "String",
+            "defaultValue": "[listsecrets(resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), variables('hmacsha256HashFunction').functionName), variables('appServiceApiVersion')).trigger_url]"
+          }
+        },
+        "annotations": []
+      },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/datasets/SourceFileShareDataset')]",
+        "[concat(variables('factoryId'), '/datasets/TargetBlobDataset')]",
+        "[concat(variables('factoryId'), '/datasets/ArchiveFileShareDataset')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/TargetBlobDataset')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "TargetAzureStorageAccount",
+          "type": "LinkedServiceReference"
+        },
+        "annotations": [],
+        "type": "AzureBlob",
+        "typeProperties": {
+          "fileName": "",
+          "folderPath": "[variables('targetBlobDatasetFolderPath')]"
+        }
+      },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/linkedServices/TargetAzureStorageAccount')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/SourceFileShareDataset')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "SourceAzureFilesAccount",
+          "type": "LinkedServiceReference"
+        },
+        "parameters": {
+          "FolderPath": {
+            "type": "String",
+            "defaultValue": "[variables('sourceFileShareDatasetFolderPath')]"
+          }
+        },
+        "annotations": [],
+        "type": "FileShare",
+        "typeProperties": {
+          "folderPath": {
+            "value": "@dataset().FolderPath",
+            "type": "Expression"
+          }
+        }
+      },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/linkedServices/SourceAzureFilesAccount')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ArchiveFileShareDataset')]",
+      "type": "Microsoft.DataFactory/factories/datasets",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "linkedServiceName": {
+          "referenceName": "SourceAzureFilesAccount",
+          "type": "LinkedServiceReference"
+        },
+        "annotations": [],
+        "type": "FileShare",
+        "typeProperties": {
+          "folderPath": {
+            "value": "[variables('archiveFileShareDatasetFolderPath')]",
+            "type": "Expression"
+          }
+        }
+      },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/linkedServices/SourceAzureFilesAccount')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/SourceAzureFilesAccount')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "[variables('dataFactoryApiVersion')]",
+      "properties": {
+        "annotations": [],
+        "type": "FileServer",
+        "typeProperties": {
+          "host": "[variables('sourceFileShareHost')]",
+          "userId": "[variables('sourceFileShareUserId')]",
+          "password": {
+            "type": "AzureKeyVaultSecret",
+            "store": {
+              "referenceName": "AzureKeyVault",
+              "type": "LinkedServiceReference"
+            },
+            "secretName": "[variables('sourceFileShareAccountKeySecretName').value]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[variables('factoryId')]",
+        "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault')]"
+      ]
+    }
+  ]
+}
