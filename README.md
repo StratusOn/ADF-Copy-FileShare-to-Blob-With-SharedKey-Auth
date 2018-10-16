@@ -1,0 +1,1 @@
+# ADF-Blob-SharedKey-Auth
