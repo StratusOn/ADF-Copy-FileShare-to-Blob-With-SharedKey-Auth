@@ -660,7 +660,7 @@
                           "method": "POST",
                           "headers": {},
                           "body": {
-                            "value": "@json(concat('{ \"message\" : \"', 'DELETE\\n\\n\\n47\\n\\napplication/json; charset=utf-8\\n\\n\\n\\n\\n\\n\\nx-ms-date:', variables('RequestUtcDateTime'), '\\nx-ms-version:2018-03-28\\n/', variables('StorageAccountName'), '/', variables('FileShareName'), if(empty(variables('FolderPath')), '', concat('/', variables('FolderPath'))), '/', item().name,'\", \"secret\": \"', variables('SourceStorageAccountKey'), '\" }'))",
+                            "value": "@json(concat('{ \"message\" : \"', 'DELETE\\n\\n\\n2\\n\\napplication/json; charset=utf-8\\n\\n\\n\\n\\n\\n\\nx-ms-date:', variables('RequestUtcDateTime'), '\\nx-ms-version:2018-03-28\\n/', variables('StorageAccountName'), '/', variables('FileShareName'), if(empty(variables('FolderPath')), '', concat('/', variables('FolderPath'))), '/', item().name,'\", \"secret\": \"', variables('SourceStorageAccountKey'), '\" }'))",
                             "type": "Expression"
                           },
                           "linkedServices": [],
@@ -705,9 +705,7 @@
                               "value": "@concat('SharedKey ', variables('StorageAccountName'), ':', activity('HmacSha256HashBase64EncodeFile').output.base64EncodedHash)",
                               "type": "Expression"
                             }
-                          },
-                          "linkedServices": [],
-                          "datasets": []
+                          }
                         }
                       }
                     ]
