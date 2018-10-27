@@ -8,3 +8,7 @@ The pipeline leverages the Copy activity to perform the copying and archiving. I
 The sample pipeline can be deployed via an ARM template in less than 2 minutes:
 
 [![Deploy to Azure](http://azuredeploy.net/deploybutton.png)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FStratusOn%2FADF-Blob-SharedKey-Auth%2Fmaster%2Fsrc%2Fazuredeploy.json)
+
+## Pipeline Flow
+
+[![ADF Pipeline](https://github.com/StratusOn/ADF-Blob-SharedKey-Auth/raw/master/images/adfv2-sharedkey-auth-pipeline.png)]
