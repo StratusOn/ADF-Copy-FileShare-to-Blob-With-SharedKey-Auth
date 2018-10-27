@@ -11,4 +11,4 @@ The sample pipeline can be deployed via an ARM template in less than 2 minutes:
 
 ## Pipeline Flow
 
-[![ADF Pipeline](https://github.com/StratusOn/ADF-Blob-SharedKey-Auth/raw/master/images/adfv2-sharedkey-auth-pipeline.png)]
+![ADF Pipeline](https://github.com/StratusOn/ADF-Blob-SharedKey-Auth/raw/master/images/adfv2-sharedkey-auth-pipeline.png)
